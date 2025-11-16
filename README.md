@@ -137,12 +137,6 @@ For issues, feature requests, or questions:
 - Check existing issues for solutions
 - Provide detailed information about your problem
 
-## Credits
-
-Created by Arya
-
-Inspired by various Discord Rich Presence plugins in the community.
-
 ## License
 
 This project is free to use and modify for personal use.
