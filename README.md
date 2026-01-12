@@ -133,7 +133,7 @@ To use custom images and make your Rich Presence visible to others, you need to 
 ## Support
 
 For issues, feature requests, or questions:
-- Open an issue on [GitHub](https://github.com/iM5LB/FullCustomDiscordRichPresence)
+- Open an issue on [GitHub](https://github.com/iM5LB/FullCustomDiscordRichPresence/issues)
 - Check existing issues for solutions
 - Provide detailed information about your problem
 
