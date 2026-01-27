@@ -1,7 +1,7 @@
 /**
  * @name FullCustomDiscordRichPresence
- * @version 1.0.0
- * @description Complete custom Discord Rich Presence plugin with advanced features, multiple profiles, and full activity control.
+ * @version 1.0.1
+ * @description Complete custom Discord Rich Presence plugin with advanced features, multiple profiles, and full activity control. Fixed for latest Discord updates.
  * @author iM5LB
  * @authorId 411189373397368832
  * @invite https://discord.gg/MYA5tYKXsY
@@ -32,10 +32,22 @@
 const config = {
     changelog: [
         {
+            title: "Version 1.0.1",
+            type: "fixed",
+            items: [
+                "Fixed module discovery for Discord's latest updates (2025).",
+                "Updated FluxDispatcher detection with multiple fallback methods.",
+                "Fixed activity dispatch system for new Discord architecture.",
+                "Improved asset manager discovery and error handling.",
+                "Added better compatibility with Discord's internal changes.",
+                "Fixed presence store detection for activity conflict checking."
+            ]
+        },
+        {
             title: "Version 1.0.0",
             type: "added",
             items: [
-                "Launched Full Custom Discord Rich Presence plugin with multiple profiles and advanced features.",
+                "Launched Full Custom Discord Rich Presence plugin.",
             ]
         }
     ]
@@ -69,10 +81,15 @@ class FullCustomDiscordRichPresence {
         try {
             await this.initialize();
             this.showChangelog();
-            this.api.UI.showToast(`${this.meta.name} started successfully!`, { type: "success" });
+            
+            if (!this.rpc) {
+                this.api.UI.showToast(`${this.meta.name}: RPC module not found. Check console.`, { type: "error" });
+            } else {
+                this.api.UI.showToast(`${this.meta.name} started successfully!`, { type: "success" });
+            }
         } catch (error) {
             this.api.Logger.error("Failed to start:", error);
-            this.api.UI.showToast(`${this.meta.name} failed to start. Check console for details.`, { type: "error" });
+            this.api.UI.showToast(`${this.meta.name} failed to start. Check console.`, { type: "error" });
         }
     }
 
@@ -83,53 +100,192 @@ class FullCustomDiscordRichPresence {
         this.loadProfiles();
         this.setupWebpackModules();
         
+        if (this.updateInterval) clearInterval(this.updateInterval);
         this.updateInterval = setInterval(() => this.updatePresence(), 15000);
         
         this.initialized = true;
-        
         await this.updatePresence();
         
         this.api.Logger.log("Initialized successfully!");
     }
 
     setupWebpackModules() {
+        const { Webpack, Logger } = this.api;
+        const { Filters } = Webpack;
+
         try {
-            this.getLocalPresence = this.api.Webpack.getModule(
-                this.api.Webpack.Filters.byKeys("getLocalPresence")
-            )?.getLocalPresence;
+            // Enhanced FluxDispatcher discovery with multiple fallback methods
+            this.rpc = this.findFluxDispatcher();
 
-            this.rpc = this.api.Webpack.getModule(
-                this.api.Webpack.Filters.byKeys("dispatch", "_subscriptions")
-            );
+            // Enhanced Presence Store discovery
+            this.getLocalPresence = this.findPresenceStore();
 
-            const filter = this.api.Webpack.Filters.byStrings("getAssetImage: size must === [number, number] for Twitch");
-            const assetManagerModule = this.api.Webpack.getModule(m => 
-                typeof m === "object" && Object.values(m).some(filter)
-            );
+            // Enhanced Asset Manager discovery
+            this.assetManager = this.findAssetManager();
 
-            if (assetManagerModule) {
-                for (const key in assetManagerModule) {
-                    const member = assetManagerModule[key];
-                    if (member?.toString()?.includes("APPLICATION_ASSETS_FETCH")) {
-                        this.assetManager = member;
-                        break;
-                    }
-                }
-            }
+            // Log discovery results
+            if (!this.rpc) Logger.error("FluxDispatcher not found. Activity updates will not work.");
+            if (!this.assetManager) Logger.warn("Asset Manager not found. Image keys will not be resolved.");
+            if (!this.getLocalPresence) Logger.warn("Presence Store not found. 'Disable when other activity' may fail.");
+            
         } catch (error) {
-            this.api.Logger.error("Failed to setup Webpack modules:", error);
+            this.api.Logger.error("Error setting up Webpack modules:", error);
         }
     }
 
+    findFluxDispatcher() {
+        const { Webpack } = this.api;
+        const { Filters } = Webpack;
+
+        // Method 1: Look for the main FluxDispatcher
+        let dispatcher = Webpack.getModule(m => 
+            m?.default?.dispatch && 
+            m?.default?.subscribe && 
+            m?.default?.unsubscribe &&
+            !m?.default?.getName
+        )?.default;
+
+        if (dispatcher) return dispatcher;
+
+        // Method 2: Look for dispatcher with different structure
+        dispatcher = Webpack.getModule(m => 
+            m?.dispatch && 
+            m?.subscribe && 
+            m?.unsubscribe &&
+            typeof m.dispatch === "function" &&
+            !m.getName
+        );
+
+        if (dispatcher) return dispatcher;
+
+        // Method 3: Look for FluxDispatcher by keys
+        dispatcher = Webpack.getModule(Filters.byKeys("dispatch", "subscribe", "unsubscribe"));
+        if (dispatcher) return dispatcher;
+
+        // Method 4: Look for dispatcher in different export patterns
+        const dispatcherModule = Webpack.getModule(m => {
+            if (!m || typeof m !== "object") return false;
+            for (const key in m) {
+                const obj = m[key];
+                if (obj && typeof obj === "object" && 
+                    typeof obj.dispatch === "function" && 
+                    typeof obj.subscribe === "function") {
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        if (dispatcherModule) {
+            for (const key in dispatcherModule) {
+                const obj = dispatcherModule[key];
+                if (obj && typeof obj === "object" && 
+                    typeof obj.dispatch === "function" && 
+                    typeof obj.subscribe === "function") {
+                    return obj;
+                }
+            }
+        }
+
+        // Method 5: Search by string patterns (last resort)
+        const stringSearchModule = Webpack.getModule(m => {
+            if (!m || typeof m !== "object") return false;
+            const str = m.toString?.() || "";
+            return str.includes("dispatch") && str.includes("subscribe") && str.includes("_subscriptions");
+        });
+
+        return stringSearchModule;
+    }
+
+    findPresenceStore() {
+        const { Webpack } = this.api;
+
+        // Method 1: Look for presence store with getLocalPresence
+        let presenceStore = Webpack.getModule(m => 
+            m?.getLocalPresence && 
+            m?.getPresence &&
+            typeof m.getLocalPresence === "function"
+        );
+
+        if (presenceStore) return presenceStore.getLocalPresence.bind(presenceStore);
+
+        // Method 2: Look for presence store in different structure
+        presenceStore = Webpack.getModule(m => 
+            m?.default?.getLocalPresence && 
+            typeof m.default.getLocalPresence === "function"
+        );
+
+        if (presenceStore) return presenceStore.default.getLocalPresence.bind(presenceStore.default);
+
+        // Method 3: Search by string patterns
+        const presenceModule = Webpack.getModule(m => {
+            if (!m || typeof m !== "object") return false;
+            const str = m.toString?.() || "";
+            return str.includes("getLocalPresence") || str.includes("LOCAL_PRESENCE");
+        });
+
+        if (presenceModule?.getLocalPresence) {
+            return presenceModule.getLocalPresence.bind(presenceModule);
+        }
+
+        return null;
+    }
+
+    findAssetManager() {
+        const { Webpack } = this.api;
+
+        // Method 1: Look for asset manager by function signature
+        const assetModule = Webpack.getModule(m => {
+            if (!m || typeof m !== "object") return false;
+            for (const key in m) {
+                if (typeof m[key] === "function") {
+                    const str = m[key].toString();
+                    if (str.includes("APPLICATION_ASSETS") || str.includes("getAssetImage")) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        });
+
+        if (assetModule) {
+            for (const key in assetModule) {
+                if (typeof assetModule[key] === "function") {
+                    const str = assetModule[key].toString();
+                    if (str.includes("APPLICATION_ASSETS") || str.includes("getAssetImage")) {
+                        return assetModule[key];
+                    }
+                }
+            }
+        }
+
+        // Method 2: Look for asset manager by different patterns
+        const assetManager = Webpack.getModule(m => 
+            typeof m === "function" && 
+            m.toString().includes("APPLICATION_ASSETS")
+        );
+
+        if (assetManager) return assetManager;
+
+        // Method 3: Look in default exports
+        const defaultAssetModule = Webpack.getModule(m => 
+            m?.default && 
+            typeof m.default === "function" && 
+            m.default.toString().includes("APPLICATION_ASSETS")
+        );
+
+        return defaultAssetModule?.default;
+    }
+
     async getAsset(key, clientID) {
-        if (!key || !this.assetManager) return "";
+        if (!key || !this.assetManager) return key;
         try {
             const id = clientID || DEFAULT_CLIENT_ID;
             const result = await this.assetManager(id, [key, undefined]);
-            return result?.[0] || "";
+            return result?.[0] || key;
         } catch (error) {
             this.api.Logger.error("Failed to get asset:", error);
-            return "";
+            return key;
         }
     }
 
@@ -178,7 +334,7 @@ class FullCustomDiscordRichPresence {
 
         let loadedProfiles = this.api.Data.load("profiles");
         
-        if (!loadedProfiles || loadedProfiles.length === 0) {
+        if (!loadedProfiles || !Array.isArray(loadedProfiles) || loadedProfiles.length === 0) {
             loadedProfiles = [{ ...defaultProfile }];
         }
 
@@ -223,7 +379,6 @@ class FullCustomDiscordRichPresence {
         }
 
         this.initialized = false;
-        
         this.clearActivity();
         
         this.api.UI.showToast(`${this.meta.name} stopped!`, { type: "info" });
@@ -231,30 +386,52 @@ class FullCustomDiscordRichPresence {
     }
 
     clearActivity() {
-        if (!this.rpc) return;
-        
-        try {
-            this.rpc.dispatch({
-                type: "LOCAL_ACTIVITY_UPDATE",
-                activity: {}
-            });
-        } catch (error) {
-            this.api.Logger.error("Failed to clear activity:", error);
-        }
+        this.setActivity({});
     }
 
     setActivity(activity) {
         if (!this.rpc) return;
 
         try {
-            const activityObj = Object.keys(activity).length > 0 
-                ? { ...activity, flags: 1 } 
-                : {};
-
-            this.rpc.dispatch({
+            const hasActivity = activity && Object.keys(activity).length > 0;
+            
+            // Enhanced activity dispatch with multiple methods
+            const baseAction = {
                 type: "LOCAL_ACTIVITY_UPDATE",
-                activity: activityObj
-            });
+                activity: hasActivity ? { ...activity, flags: 1 } : {}
+            };
+
+            // Method 1: Try with socketId (newer Discord)
+            try {
+                this.rpc.dispatch({
+                    ...baseAction,
+                    socketId: "main"
+                });
+                return;
+            } catch (e) {
+                this.api.Logger.warn("Method 1 failed, trying method 2:", e.message);
+            }
+
+            // Method 2: Try without socketId (older Discord)
+            try {
+                this.rpc.dispatch(baseAction);
+                return;
+            } catch (e) {
+                this.api.Logger.warn("Method 2 failed, trying method 3:", e.message);
+            }
+
+            // Method 3: Try with different action structure
+            try {
+                this.rpc.dispatch({
+                    type: "LOCAL_ACTIVITY_UPDATE",
+                    socketId: "main",
+                    ...baseAction.activity && { activity: baseAction.activity }
+                });
+                return;
+            } catch (e) {
+                this.api.Logger.error("All dispatch methods failed:", e);
+            }
+
         } catch (error) {
             this.api.Logger.error("Failed to set activity:", error);
         }
@@ -267,10 +444,6 @@ class FullCustomDiscordRichPresence {
         } catch {
             return false;
         }
-    }
-
-    isEmpty(value) {
-        return value === undefined || value === null || value === '';
     }
 
     async updatePresence() {
@@ -300,13 +473,15 @@ class FullCustomDiscordRichPresence {
         try {
             const presence = this.getLocalPresence();
             const activities = presence?.activities || [];
+            const profile = this.activeProfile;
             const clientID = profile.clientID || DEFAULT_CLIENT_ID;
             
             return activities.some(a => 
                 a?.application_id && 
                 a.application_id !== clientID
             );
-        } catch {
+        } catch (error) {
+            this.api.Logger.error("Error in hasOtherActivity:", error);
             return false;
         }
     }
@@ -350,9 +525,9 @@ class FullCustomDiscordRichPresence {
         }
 
         const buttons = this.buildButtons(profile);
-        if (buttons.labels.length > 0) {
-            activity.buttons = buttons.labels;
-            activity.metadata = { button_urls: buttons.urls };
+        if (buttons.length > 0) {
+            activity.buttons = buttons;
+            activity.metadata = { button_urls: buttons.map(b => b.url) };
         }
 
         return activity;
@@ -401,19 +576,17 @@ class FullCustomDiscordRichPresence {
     }
 
     buildButtons(profile) {
-        const buttons = { labels: [], urls: [] };
+        const buttons = [];
 
         if (profile.button1Label && profile.button1URL && this.isValidURL(profile.button1URL)) {
             if (profile.button1Label.length <= 32) {
-                buttons.labels.push(profile.button1Label);
-                buttons.urls.push(profile.button1URL);
+                buttons.push({ label: profile.button1Label, url: profile.button1URL });
             }
         }
 
         if (profile.button2Label && profile.button2URL && this.isValidURL(profile.button2URL)) {
             if (profile.button2Label.length <= 32) {
-                buttons.labels.push(profile.button2Label);
-                buttons.urls.push(profile.button2URL);
+                buttons.push({ label: profile.button2Label, url: profile.button2URL });
             }
         }
 
@@ -514,7 +687,7 @@ class FullCustomDiscordRichPresence {
                     type: "text",
                     id: "clientID",
                     name: "Application Client ID",
-                    note: "Your Discord Application ID from https://discord.com/developers/applications (Required for images and visibility to others)",
+                    note: "Your Discord Application ID (Required for images)",
                     value: profile.clientID,
                     placeholder: DEFAULT_CLIENT_ID
                 },
@@ -536,7 +709,7 @@ class FullCustomDiscordRichPresence {
                     type: "text",
                     id: "name",
                     name: "Activity Name",
-                    note: "Main activity name (e.g., 'Visual Studio Code', 'Spotify')",
+                    note: "Main activity name (e.g., 'Visual Studio Code')",
                     value: profile.name,
                     placeholder: "Custom Activity"
                 },
@@ -560,7 +733,7 @@ class FullCustomDiscordRichPresence {
                     type: "text",
                     id: "streamURL",
                     name: "Stream URL",
-                    note: "Twitch or YouTube URL (only for Streaming activity type)",
+                    note: "Twitch or YouTube URL",
                     value: profile.streamURL,
                     placeholder: "https://twitch.tv/username"
                 },
@@ -568,7 +741,7 @@ class FullCustomDiscordRichPresence {
                     type: "text",
                     id: "largeImageKey",
                     name: "Large Image Key",
-                    note: "Asset key for large image (upload assets in your Discord application)",
+                    note: "Asset key for large image",
                     value: profile.largeImageKey,
                     placeholder: "large_icon"
                 },
@@ -644,7 +817,7 @@ class FullCustomDiscordRichPresence {
                     type: "number",
                     id: "playersFixed",
                     name: "Fixed Player Count",
-                    note: "Fixed number of players (when not randomized)",
+                    note: "Fixed number of players",
                     value: profile.playersFixed,
                     min: 0
                 },
@@ -676,7 +849,7 @@ class FullCustomDiscordRichPresence {
                     type: "text",
                     id: "button1Label",
                     name: "Button 1 Label",
-                    note: "Text for first button (max 32 chars, only visible to others if app is verified)",
+                    note: "Max 32 chars",
                     value: profile.button1Label,
                     placeholder: "Visit Website",
                     maxLength: 32
@@ -693,7 +866,7 @@ class FullCustomDiscordRichPresence {
                     type: "text",
                     id: "button2Label",
                     name: "Button 2 Label",
-                    note: "Text for second button (max 32 chars)",
+                    note: "Max 32 chars",
                     value: profile.button2Label,
                     placeholder: "Join Discord",
                     maxLength: 32
@@ -776,7 +949,7 @@ class FullCustomDiscordRichPresence {
 
         this.profiles.push(newProfile);
         this.saveProfiles();
-        this.api.UI.showToast("Profile created! Close and reopen settings.", { type: "success" });
+        this.api.UI.showToast("Profile created! Reopen settings to see it.", { type: "success" });
     }
 
     duplicateProfile() {
@@ -788,7 +961,7 @@ class FullCustomDiscordRichPresence {
 
         this.profiles.push(duplicatedProfile);
         this.saveProfiles();
-        this.api.UI.showToast("Profile duplicated! Close and reopen settings.", { type: "success" });
+        this.api.UI.showToast("Profile duplicated!", { type: "success" });
     }
 
     deleteProfile(index) {
@@ -813,7 +986,7 @@ class FullCustomDiscordRichPresence {
                     
                     this.saveProfiles();
                     this.updatePresence();
-                    this.api.UI.showToast("Profile deleted! Close and reopen settings.", { type: "success" });
+                    this.api.UI.showToast("Profile deleted!", { type: "success" });
                 }
             }
         );
